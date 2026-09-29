@@ -1,12 +1,16 @@
 import type { Vec2 } from '../core/vec';
-import { sub, normalize } from '../core/vec';
 import type { AbilityDef } from '../abilities/definitions';
 
 /**
  * A bot's cast state machine: it waits out its cooldown, then locks in an
- * aim direction and winds up (telegraphing the cast), then fires.
+ * aim point and winds up (telegraphing the cast), then fires.
  *
- * Aiming is `direct` only in Phase 2 (aim at the player's position at the
+ * The locked `aimPoint` is a world position, not just a direction, so it
+ * works for every archetype: `linear`/`linearSlow`/`beam`/`cone` derive a
+ * direction from (aimPoint - position), while `circle` uses the point
+ * itself as the ground target.
+ *
+ * Aiming is `direct` only in Phase 2/3 (aim at the player's position at the
  * moment the windup starts); `predictive`/`mixed` aim modes and multi-bot
  * spawning arrive in Phase 4.
  */
@@ -21,8 +25,8 @@ export interface BotState {
   cooldownRemaining: number;
   /** Seconds left in the current windup (phase === 'winding-up'). */
   windupRemaining: number;
-  /** Direction locked in when the windup started; null while idle. */
-  aimDirection: Vec2 | null;
+  /** Target point locked in when the windup started; null while idle. */
+  aimPoint: Vec2 | null;
 }
 
 export function createBot(position: Vec2, abilityId: string, initialCooldown = 0): BotState {
@@ -32,19 +36,19 @@ export function createBot(position: Vec2, abilityId: string, initialCooldown = 0
     phase: 'idle',
     cooldownRemaining: initialCooldown,
     windupRemaining: 0,
-    aimDirection: null,
+    aimPoint: null,
   };
 }
 
 export interface BotCast {
   abilityId: string;
   origin: Vec2;
-  direction: Vec2;
+  aimPoint: Vec2;
 }
 
 export interface BotStepResult {
   bot: BotState;
-  /** Set on the exact tick the projectile should be spawned. */
+  /** Set on the exact tick the ability should fire/resolve. */
   cast: BotCast | null;
 }
 
@@ -59,15 +63,14 @@ export function stepBot(
     if (cooldownRemaining > 0) {
       return { bot: { ...bot, cooldownRemaining }, cast: null };
     }
-    // Cooldown elapsed: lock aim now and start the telegraphed windup.
-    const aimDirection = normalize(sub(playerPosition, bot.position));
+    // Cooldown elapsed: lock the aim point now and start the telegraphed windup.
     return {
       bot: {
         ...bot,
         cooldownRemaining: 0,
         phase: 'winding-up',
         windupRemaining: ability.windup,
-        aimDirection,
+        aimPoint: { ...playerPosition },
       },
       cast: null,
     };
@@ -79,15 +82,15 @@ export function stepBot(
     return { bot: { ...bot, windupRemaining }, cast: null };
   }
 
-  const direction = bot.aimDirection ?? { x: 1, y: 0 };
+  const aimPoint = bot.aimPoint ?? { x: bot.position.x + 1, y: bot.position.y };
   return {
     bot: {
       ...bot,
       phase: 'idle',
       windupRemaining: 0,
-      aimDirection: null,
+      aimPoint: null,
       cooldownRemaining: ability.cooldown,
     },
-    cast: { abilityId: bot.abilityId, origin: { ...bot.position }, direction },
+    cast: { abilityId: bot.abilityId, origin: { ...bot.position }, aimPoint },
   };
 }

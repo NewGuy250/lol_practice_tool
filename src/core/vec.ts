@@ -64,6 +64,14 @@ export function fromAngle(angle: number, len = 1): Vec2 {
   return { x: Math.cos(angle) * len, y: Math.sin(angle) * len };
 }
 
+/** Wraps an angle (radians) into (-PI, PI]. */
+export function normalizeAngle(angle: number): number {
+  let a = angle % (2 * Math.PI);
+  if (a > Math.PI) a -= 2 * Math.PI;
+  if (a < -Math.PI) a += 2 * Math.PI;
+  return a;
+}
+
 /** Moves `from` toward `to` by at most `maxDelta` units, without overshooting. */
 export function moveToward(from: Vec2, to: Vec2, maxDelta: number): Vec2 {
   const diff = sub(to, from);

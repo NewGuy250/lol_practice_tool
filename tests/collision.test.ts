@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { circleCircle, closestPointOnSegment, circleVsSweptCircle } from '../src/core/collision';
+import {
+  circleCircle,
+  closestPointOnSegment,
+  circleVsSweptCircle,
+  circleVsOrientedRect,
+  circleVsCone,
+} from '../src/core/collision';
 
 describe('circleCircle', () => {
   it('detects overlapping circles', () => {
@@ -103,5 +109,88 @@ describe('circleVsSweptCircle', () => {
   it('just outside the combined radius is a miss', () => {
     const hit = circleVsSweptCircle({ x: 0, y: 0 }, 65, { x: -100, y: 126 }, { x: 100, y: 126 }, 60);
     expect(hit).toBe(false);
+  });
+});
+
+describe('circleVsOrientedRect', () => {
+  // Rect: centered at (100, 0), 200 long (halfLength 100) x 40 wide (halfWidth 20),
+  // unrotated (angle 0) — so it spans x in [0, 200], y in [-20, 20].
+
+  it('hits when the circle center is inside the rect', () => {
+    const hit = circleVsOrientedRect({ x: 100, y: 0 }, 10, { x: 100, y: 0 }, 100, 20, 0);
+    expect(hit).toBe(true);
+  });
+
+  it('hits when the circle grazes the long edge exactly at the combined radius', () => {
+    const hit = circleVsOrientedRect({ x: 100, y: 30 }, 10, { x: 100, y: 0 }, 100, 20, 0);
+    expect(hit).toBe(true); // distance to edge is 10, equal to the circle's radius
+  });
+
+  it('misses just past the long edge', () => {
+    const hit = circleVsOrientedRect({ x: 100, y: 31 }, 10, { x: 100, y: 0 }, 100, 20, 0);
+    expect(hit).toBe(false);
+  });
+
+  it('misses beyond the short (end) edge', () => {
+    // Rect ends at x=200; circle center at x=215 is 15 units past the edge, outside its radius 10.
+    const hit = circleVsOrientedRect({ x: 215, y: 0 }, 10, { x: 100, y: 0 }, 100, 20, 0);
+    expect(hit).toBe(false);
+  });
+
+  it('accounts for rotation: a rect rotated 90° checks along the y axis instead', () => {
+    // Same rect rotated 90°: now spans y in [0, 200], x in [-20, 20] around its center.
+    const insideRotated = circleVsOrientedRect({ x: 0, y: 100 }, 10, { x: 0, y: 100 }, 100, 20, Math.PI / 2);
+    expect(insideRotated).toBe(true);
+
+    // A point that would be inside the unrotated rect but is outside once rotated.
+    const outsideAfterRotation = circleVsOrientedRect({ x: 100, y: 0 }, 10, { x: 0, y: 0 }, 100, 20, Math.PI / 2);
+    expect(outsideAfterRotation).toBe(false);
+  });
+});
+
+describe('circleVsCone', () => {
+  const origin = { x: 0, y: 0 };
+  const dir = { x: 1, y: 0 }; // pointing along +x
+  const halfAngle = Math.PI / 6; // 30°, so a 60° total cone
+  const range = 500;
+
+  it('hits a target straight down the centerline, within range', () => {
+    expect(circleVsCone({ x: 300, y: 0 }, 30, origin, dir, halfAngle, range)).toBe(true);
+  });
+
+  it('misses a target directly behind the apex', () => {
+    expect(circleVsCone({ x: -300, y: 0 }, 30, origin, dir, halfAngle, range)).toBe(false);
+  });
+
+  it('misses a target beyond range even if angularly aligned', () => {
+    expect(circleVsCone({ x: 600, y: 0 }, 30, origin, dir, halfAngle, range)).toBe(false);
+  });
+
+  it('hits a target just within range accounting for the circle radius reaching in', () => {
+    // Center at 520 but radius 30 reaches back to 490, within the 500 range.
+    expect(circleVsCone({ x: 520, y: 0 }, 30, origin, dir, halfAngle, range)).toBe(true);
+  });
+
+  it('hits a target well within the angular half-width', () => {
+    const y = 300 * Math.tan(halfAngle * 0.5); // halfway to the edge angle
+    expect(circleVsCone({ x: 300, y }, 20, origin, dir, halfAngle, range)).toBe(true);
+  });
+
+  it('misses a target well outside the angular half-width', () => {
+    const y = 300 * Math.tan(halfAngle) + 200; // well past the edge angle
+    expect(circleVsCone({ x: 300, y }, 20, origin, dir, halfAngle, range)).toBe(false);
+  });
+
+  it('hits when the circle overlaps the apex itself', () => {
+    expect(circleVsCone({ x: 5, y: 5 }, 20, origin, dir, halfAngle, range)).toBe(true);
+  });
+
+  it('grazes near the angular edge thanks to the circle radius (tangent-line test)', () => {
+    // Place the circle center exactly on the cone's edge ray at distance d;
+    // any positive radius should register as a graze/hit at that exact angle.
+    const d = 300;
+    const edgeAngle = halfAngle;
+    const center = { x: d * Math.cos(edgeAngle), y: d * Math.sin(edgeAngle) };
+    expect(circleVsCone(center, 15, origin, dir, halfAngle, range)).toBe(true);
   });
 });

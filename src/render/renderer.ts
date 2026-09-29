@@ -1,10 +1,13 @@
 import { ARENA_WIDTH, ARENA_HEIGHT, worldToScreen, worldLengthToScreen } from './viewport';
 import type { Viewport } from './viewport';
+import type { Vec2 } from '../core/vec';
+import { sub, normalize, length as vecLength } from '../core/vec';
 import type { PlayerState } from '../entities/player';
 import { PLAYER_RADIUS } from '../entities/player';
 import type { BotState } from '../entities/bot';
 import type { LinearSkillshot } from '../entities/skillshot';
 import { ABILITIES } from '../abilities/definitions';
+import type { AbilityDef, LinearAbilityDef, CircleAbilityDef, BeamAbilityDef, ConeAbilityDef } from '../abilities/definitions';
 import type { EffectsState } from './effects';
 import { CLICK_MARKER_LIFETIME } from './effects';
 
@@ -21,12 +24,15 @@ const BOT_COLOR = '#ffb454';
 const BOT_OUTLINE = '#4a2f0e';
 const CAST_BAR_WIDTH = 70; // CSS pixels
 const CAST_BAR_HEIGHT = 8;
+const DEBUG_COLOR = '#ff2fd1';
 
 export interface RenderState {
   player: PlayerState;
   bots: BotState[];
   skillshots: LinearSkillshot[];
   effects: EffectsState;
+  /** Debug key (`` ` ``) toggles drawing exact collision hitboxes. */
+  debug?: boolean;
 }
 
 export function clearCanvas(ctx: CanvasRenderingContext2D, width: number, height: number): void {
@@ -120,34 +126,176 @@ export function drawPlayer(ctx: CanvasRenderingContext2D, viewport: Viewport, pl
   ctx.fill();
 }
 
+function directionBetween(a: Vec2, b: Vec2): Vec2 {
+  const d = sub(b, a);
+  return vecLength(d) > 1e-6 ? normalize(d) : { x: 1, y: 0 };
+}
+
+/** Full danger-zone outline shown immediately (fairness), with a fill that grows as `progress` (0->1) approaches landing. */
+function drawLinearTelegraph(
+  ctx: CanvasRenderingContext2D,
+  viewport: Viewport,
+  ability: LinearAbilityDef,
+  origin: Vec2,
+  aimPoint: Vec2,
+  progress: number
+): void {
+  const direction = directionBetween(origin, aimPoint);
+  const screenOrigin = worldToScreen(viewport, origin);
+  const previewLen = worldLengthToScreen(viewport, ability.range);
+  const previewWidth = worldLengthToScreen(viewport, ability.width);
+  const end = {
+    x: screenOrigin.x + direction.x * previewLen,
+    y: screenOrigin.y + direction.y * previewLen,
+  };
+
+  ctx.strokeStyle = ability.color;
+  ctx.globalAlpha = 0.15 + progress * 0.35;
+  ctx.lineWidth = Math.max(1, previewWidth);
+  ctx.beginPath();
+  ctx.moveTo(screenOrigin.x, screenOrigin.y);
+  ctx.lineTo(end.x, end.y);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+
+function drawCircleTelegraph(
+  ctx: CanvasRenderingContext2D,
+  viewport: Viewport,
+  ability: CircleAbilityDef,
+  aimPoint: Vec2,
+  progress: number
+): void {
+  const center = worldToScreen(viewport, aimPoint);
+  const radius = worldLengthToScreen(viewport, ability.radius);
+
+  ctx.strokeStyle = ability.color;
+  ctx.globalAlpha = 0.6;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(center.x, center.y, radius, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  ctx.fillStyle = ability.color;
+  ctx.globalAlpha = 0.12 + progress * 0.35;
+  ctx.beginPath();
+  ctx.arc(center.x, center.y, radius * progress, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+}
+
+function drawBeamTelegraph(
+  ctx: CanvasRenderingContext2D,
+  viewport: Viewport,
+  ability: BeamAbilityDef,
+  origin: Vec2,
+  aimPoint: Vec2,
+  progress: number
+): void {
+  const direction = directionBetween(origin, aimPoint);
+  const angle = Math.atan2(direction.y, direction.x);
+  const screenOrigin = worldToScreen(viewport, origin);
+  const beamLength = worldLengthToScreen(viewport, ability.length);
+  const beamWidth = worldLengthToScreen(viewport, ability.width);
+
+  ctx.save();
+  ctx.translate(screenOrigin.x, screenOrigin.y);
+  ctx.rotate(angle);
+
+  ctx.strokeStyle = ability.color;
+  ctx.globalAlpha = 0.6;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(0, -beamWidth / 2, beamLength, beamWidth);
+  ctx.globalAlpha = 1;
+
+  ctx.fillStyle = ability.color;
+  ctx.globalAlpha = 0.12 + progress * 0.4;
+  ctx.fillRect(0, -beamWidth / 2, beamLength, beamWidth);
+  ctx.globalAlpha = 1;
+
+  ctx.restore();
+}
+
+function drawConeTelegraph(
+  ctx: CanvasRenderingContext2D,
+  viewport: Viewport,
+  ability: ConeAbilityDef,
+  origin: Vec2,
+  aimPoint: Vec2,
+  progress: number
+): void {
+  const direction = directionBetween(origin, aimPoint);
+  const angle = Math.atan2(direction.y, direction.x);
+  const halfAngle = ability.angle / 2;
+  const screenOrigin = worldToScreen(viewport, origin);
+  const range = worldLengthToScreen(viewport, ability.range);
+
+  ctx.save();
+  ctx.translate(screenOrigin.x, screenOrigin.y);
+
+  ctx.strokeStyle = ability.color;
+  ctx.globalAlpha = 0.6;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.arc(0, 0, range, angle - halfAngle, angle + halfAngle);
+  ctx.closePath();
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  ctx.fillStyle = ability.color;
+  ctx.globalAlpha = 0.12 + progress * 0.4;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.arc(0, 0, range * progress, angle - halfAngle, angle + halfAngle);
+  ctx.closePath();
+  ctx.fill();
+  ctx.globalAlpha = 1;
+
+  ctx.restore();
+}
+
+function drawTelegraph(
+  ctx: CanvasRenderingContext2D,
+  viewport: Viewport,
+  ability: AbilityDef,
+  origin: Vec2,
+  aimPoint: Vec2,
+  progress: number
+): void {
+  switch (ability.archetype) {
+    case 'linear':
+    case 'linearSlow':
+      drawLinearTelegraph(ctx, viewport, ability, origin, aimPoint, progress);
+      break;
+    case 'circle':
+      drawCircleTelegraph(ctx, viewport, ability, aimPoint, progress);
+      break;
+    case 'beam':
+      drawBeamTelegraph(ctx, viewport, ability, origin, aimPoint, progress);
+      break;
+    case 'cone':
+      drawConeTelegraph(ctx, viewport, ability, origin, aimPoint, progress);
+      break;
+  }
+}
+
 /**
- * Draws a bot and, while it's winding up, its telegraph: a faint band along
- * the locked aim direction (showing where the shot will travel) plus a
- * cast bar that fills as the windup progresses. This is what makes the
- * upcoming shot dodgeable instead of an unfair surprise.
+ * Draws a bot and, while it's winding up, its telegraph — the full danger
+ * zone for its archetype (band/circle/beam/cone), shown at full extent
+ * immediately, with a fill that grows as the windup nears its end, plus a
+ * cast bar. This is what makes the upcoming shot dodgeable instead of an
+ * unfair surprise.
  */
 export function drawBot(ctx: CanvasRenderingContext2D, viewport: Viewport, bot: BotState): void {
   const screenPos = worldToScreen(viewport, bot.position);
   const radius = worldLengthToScreen(viewport, BOT_RADIUS);
   const ability = ABILITIES[bot.abilityId];
 
-  if (bot.phase === 'winding-up' && bot.aimDirection && ability) {
+  if (bot.phase === 'winding-up' && bot.aimPoint && ability) {
     const progress = 1 - bot.windupRemaining / ability.windup; // 0 -> 1
-    const previewLen = worldLengthToScreen(viewport, ability.range);
-    const previewWidth = worldLengthToScreen(viewport, ability.width);
-    const end = {
-      x: screenPos.x + bot.aimDirection.x * previewLen,
-      y: screenPos.y + bot.aimDirection.y * previewLen,
-    };
-
-    ctx.strokeStyle = ability.color;
-    ctx.globalAlpha = 0.15 + progress * 0.35;
-    ctx.lineWidth = Math.max(1, previewWidth);
-    ctx.beginPath();
-    ctx.moveTo(screenPos.x, screenPos.y);
-    ctx.lineTo(end.x, end.y);
-    ctx.stroke();
-    ctx.globalAlpha = 1;
+    drawTelegraph(ctx, viewport, ability, bot.position, bot.aimPoint, progress);
 
     const barX = screenPos.x - CAST_BAR_WIDTH / 2;
     const barY = screenPos.y - radius - 18;
@@ -214,6 +362,43 @@ export function drawEffects(ctx: CanvasRenderingContext2D, viewport: Viewport, e
   }
 }
 
+/**
+ * Debug view (toggled by the `` ` `` key): draws the exact shapes collision
+ * checks use, rather than the stylized visuals above — most usefully, each
+ * projectile's swept capsule (previous tick's position -> this tick's
+ * position), which is what actually gets tested against the player each
+ * step and is otherwise invisible.
+ */
+function drawDebugOverlay(ctx: CanvasRenderingContext2D, viewport: Viewport, state: RenderState): void {
+  ctx.strokeStyle = DEBUG_COLOR;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([4, 4]);
+
+  const playerScreen = worldToScreen(viewport, state.player.position);
+  const playerRadius = worldLengthToScreen(viewport, PLAYER_RADIUS);
+  ctx.beginPath();
+  ctx.arc(playerScreen.x, playerScreen.y, playerRadius, 0, Math.PI * 2);
+  ctx.stroke();
+
+  for (const shot of state.skillshots) {
+    const a = worldToScreen(viewport, shot.previousPosition);
+    const b = worldToScreen(viewport, shot.position);
+    const r = worldLengthToScreen(viewport, shot.width / 2);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(a.x, a.y, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, r, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  ctx.setLineDash([]);
+}
+
 export function render(
   ctx: CanvasRenderingContext2D,
   viewport: Viewport,
@@ -229,4 +414,7 @@ export function render(
     drawSkillshot(ctx, viewport, shot);
   }
   drawPlayer(ctx, viewport, state.player);
+  if (state.debug) {
+    drawDebugOverlay(ctx, viewport, state);
+  }
 }

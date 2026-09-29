@@ -4,9 +4,18 @@ import { createBot, stepBot } from '../entities/bot';
 import type { BotState } from '../entities/bot';
 import { spawnLinearSkillshot, stepLinearSkillshot, isLinearSkillshotExpired } from '../entities/skillshot';
 import type { LinearSkillshot } from '../entities/skillshot';
-import { circleVsSweptCircle } from '../core/collision';
-import { ABILITIES, PIERCING_BOLT } from '../abilities/definitions';
-import { ARENA_WIDTH } from '../core/arena';
+import { circleVsSweptCircle, circleCircle, circleVsOrientedRect, circleVsCone } from '../core/collision';
+import { sub, length, normalize } from '../core/vec';
+import type { Vec2 } from '../core/vec';
+import {
+  ABILITIES,
+  PIERCING_BOLT,
+  BINDING_ROOT,
+  VOID_ERUPTION,
+  ARCING_LANCE,
+  SWEEPING_BLADE,
+} from '../abilities/definitions';
+import { ARENA_WIDTH, ARENA_HEIGHT } from '../core/arena';
 
 /**
  * Owns all simulation entities and advances them one fixed step at a time.
@@ -27,12 +36,25 @@ export interface WorldState {
 }
 
 export function createWorld(): WorldState {
-  const bot = createBot({ x: ARENA_WIDTH / 2, y: 180 }, PIERCING_BOLT.id, 1);
+  const margin = 180;
+  const bots = [
+    createBot({ x: ARENA_WIDTH / 2, y: margin }, PIERCING_BOLT.id, 1),
+    createBot({ x: ARENA_WIDTH / 2, y: ARENA_HEIGHT - margin }, BINDING_ROOT.id, 1.5),
+    createBot({ x: margin, y: ARENA_HEIGHT / 2 }, VOID_ERUPTION.id, 2),
+    createBot({ x: ARENA_WIDTH - margin, y: ARENA_HEIGHT / 2 }, ARCING_LANCE.id, 2.5),
+    createBot({ x: margin, y: margin }, SWEEPING_BLADE.id, 3),
+  ];
   return {
     player: createPlayer(spawnPositionCenter()),
-    bots: [bot],
+    bots,
     skillshots: [],
   };
+}
+
+/** Unit direction from `origin` to `aimPoint`, defaulting to +x if they coincide. */
+function directionTo(origin: Vec2, aimPoint: Vec2): Vec2 {
+  const d = sub(aimPoint, origin);
+  return length(d) > 1e-6 ? normalize(d) : { x: 1, y: 0 };
 }
 
 export interface WorldStepResult {
@@ -55,9 +77,47 @@ export function stepWorld(world: WorldState, dt: number, playerCommand: PlayerCo
     }
     const result = stepBot(bot, dt, ability, player.position);
     bots.push(result.bot);
-    if (result.cast) {
-      newlySpawned.push(spawnLinearSkillshot(ability, result.cast.origin, result.cast.direction));
-      events.push({ type: 'cast', abilityId: result.cast.abilityId });
+    if (!result.cast) continue;
+
+    events.push({ type: 'cast', abilityId: result.cast.abilityId });
+    const { origin, aimPoint } = result.cast;
+
+    switch (ability.archetype) {
+      case 'linear':
+      case 'linearSlow': {
+        newlySpawned.push(spawnLinearSkillshot(ability, origin, directionTo(origin, aimPoint)));
+        break;
+      }
+      case 'circle': {
+        // Ground-targeted: the effect resolves instantly at the locked point.
+        if (circleCircle(aimPoint, ability.radius, player.position, PLAYER_RADIUS)) {
+          events.push({ type: 'hit', abilityId: ability.id });
+        }
+        break;
+      }
+      case 'beam': {
+        // Instant-hit rectangle from the bot, along the locked aim direction.
+        const direction = directionTo(origin, aimPoint);
+        const halfLength = ability.length / 2;
+        const halfWidth = ability.width / 2;
+        const rectCenter = {
+          x: origin.x + direction.x * halfLength,
+          y: origin.y + direction.y * halfLength,
+        };
+        const angle = Math.atan2(direction.y, direction.x);
+        if (circleVsOrientedRect(player.position, PLAYER_RADIUS, rectCenter, halfLength, halfWidth, angle)) {
+          events.push({ type: 'hit', abilityId: ability.id });
+        }
+        break;
+      }
+      case 'cone': {
+        // Instant-hit sector from the bot, along the locked aim direction.
+        const direction = directionTo(origin, aimPoint);
+        if (circleVsCone(player.position, PLAYER_RADIUS, origin, direction, ability.angle / 2, ability.range)) {
+          events.push({ type: 'hit', abilityId: ability.id });
+        }
+        break;
+      }
     }
   }
 
@@ -74,7 +134,7 @@ export function stepWorld(world: WorldState, dt: number, playerCommand: PlayerCo
     );
     if (hit) {
       events.push({ type: 'hit', abilityId: stepped.abilityId });
-      continue; // Phase 2: the projectile disappears on hit.
+      continue; // the projectile disappears on hit
     }
     if (!isLinearSkillshotExpired(stepped)) {
       survivors.push(stepped);

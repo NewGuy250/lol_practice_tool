@@ -36,6 +36,7 @@ const input = createInputManager(canvas, () => viewport);
 
 let world = createWorld();
 const effects = createEffectsState();
+let debugHitboxes = false;
 
 function step(dt: number): void {
   const state = input.getState();
@@ -52,6 +53,10 @@ function step(dt: number): void {
     command.moveTo = state.cursorWorld;
   }
 
+  if (events.toggleDebug) {
+    debugHitboxes = !debugHitboxes;
+  }
+
   const result = stepWorld(world, dt, command);
   world = result.world;
   stepEffects(effects, dt);
@@ -63,11 +68,17 @@ function step(dt: number): void {
     }
   }
 
-  // Flash/pause/restart/debug-toggle are reserved for later phases (see PLAN.md).
+  // Flash/pause/restart are reserved for later phases (see PLAN.md).
 }
 
 function frameRender(_alpha: number): void {
-  render(ctx!, viewport, { player: world.player, bots: world.bots, skillshots: world.skillshots, effects });
+  render(ctx!, viewport, {
+    player: world.player,
+    bots: world.bots,
+    skillshots: world.skillshots,
+    effects,
+    debug: debugHitboxes,
+  });
 }
 
 startLoop({ step, render: frameRender });
